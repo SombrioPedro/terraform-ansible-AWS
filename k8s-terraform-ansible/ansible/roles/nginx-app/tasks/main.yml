@@ -1,0 +1,57 @@
+---
+- name: Aguardar todos os nós ficarem Ready
+  ansible.builtin.command: kubectl wait --for=condition=Ready nodes --all --timeout=600s
+  environment:
+    KUBECONFIG: "{{ admin_kubeconfig }}"
+  changed_when: false
+
+- name: Gerar o manifesto do NGINX
+  ansible.builtin.template:
+    src: nginx.yaml.j2
+    dest: /etc/kubernetes/nginx-app.yaml
+    mode: "0644"
+
+- name: Aplicar Deployment e Service do NGINX
+  ansible.builtin.command: kubectl apply -f /etc/kubernetes/nginx-app.yaml
+  environment:
+    KUBECONFIG: "{{ admin_kubeconfig }}"
+  register: nginx_apply
+  changed_when: "'created' in nginx_apply.stdout or 'configured' in nginx_apply.stdout"
+
+- name: Aguardar o rollout do NGINX
+  ansible.builtin.command: kubectl rollout status deployment/nginx --timeout=300s
+  environment:
+    KUBECONFIG: "{{ admin_kubeconfig }}"
+  changed_when: false
+
+- name: Testar o NodePort a partir do Control Plane
+  ansible.builtin.uri:
+    url: "http://{{ hostvars[item].private_ip }}:{{ nginx_node_port }}"
+    status_code: 200
+  loop: "{{ groups['workers'] }}"
+  register: nodeport_test
+  retries: 10
+  delay: 6
+  until: nodeport_test.status == 200
+
+- name: Coletar estado final do cluster
+  ansible.builtin.shell: |
+    set -o pipefail
+    echo "### kubectl get nodes -o wide"; kubectl get nodes -o wide
+    echo; echo "### kubectl get pods -A"; kubectl get pods -A
+    echo; echo "### kubectl get svc -A"; kubectl get svc -A
+    echo; echo "### kubectl get deployment,pods -o wide"; kubectl get deployment,pods -o wide
+  args:
+    executable: /bin/bash
+  environment:
+    KUBECONFIG: "{{ admin_kubeconfig }}"
+  register: cluster_state
+  changed_when: false
+
+- name: Estado do cluster
+  ansible.builtin.debug:
+    msg: "{{ cluster_state.stdout_lines }}"
+
+- name: URLs do NGINX
+  ansible.builtin.debug:
+    msg: "{{ groups['workers'] | map('extract', hostvars, 'public_ip') | map('regex_replace', '^(.*)$', 'http://\\1:' ~ nginx_node_port) | list }}"

@@ -1,0 +1,41 @@
+---
+# Fluxo: preparação de todos os nós -> Control Plane(s) + Calico -> Workers -> NGINX
+
+- name: Aguardar os servidores ficarem acessíveis
+  hosts: k8s_cluster
+  gather_facts: false
+  tasks:
+    - name: Aguardar conexão SSH (via Bastion, se houver)
+      ansible.builtin.wait_for_connection:
+        delay: 5
+        sleep: 10
+        timeout: 600
+
+    - name: Coletar fatos
+      ansible.builtin.setup:
+
+- name: Preparar todos os nós (Linux, containerd, pacotes do Kubernetes)
+  hosts: k8s_cluster
+  become: true
+  roles:
+    - common
+    - containerd
+    - kubernetes
+
+- name: Inicializar o(s) Control Plane(s) e instalar o Calico
+  hosts: control_plane
+  become: true
+  roles:
+    - control-plane
+
+- name: Adicionar os Workers ao cluster
+  hosts: workers
+  become: true
+  roles:
+    - worker
+
+- name: Publicar a aplicação NGINX
+  hosts: "{{ groups['control_plane'][0] }}"
+  become: true
+  roles:
+    - nginx-app

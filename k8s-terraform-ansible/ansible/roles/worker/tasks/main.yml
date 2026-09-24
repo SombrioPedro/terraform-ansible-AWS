@@ -1,0 +1,23 @@
+---
+- name: Verificar se o Worker já faz parte do cluster
+  ansible.builtin.stat:
+    path: /etc/kubernetes/kubelet.conf
+  register: worker_kubelet_conf
+
+# O comando é gerado no Control Plane e distribuído pelo Ansible:
+# ninguém copia o `kubeadm join` manualmente.
+- name: Obter o comando kubeadm join no Control Plane
+  ansible.builtin.command: kubeadm token create --ttl 1h --print-join-command
+  delegate_to: "{{ primary_control_plane }}"
+  run_once: true
+  register: worker_join_command
+  changed_when: false
+  no_log: true
+
+- name: Adicionar o Worker ao cluster (kubeadm join)
+  ansible.builtin.command: >
+    {{ worker_join_command.stdout }}
+    --node-name {{ inventory_hostname }}
+  changed_when: true
+  no_log: true
+  when: not worker_kubelet_conf.stat.exists

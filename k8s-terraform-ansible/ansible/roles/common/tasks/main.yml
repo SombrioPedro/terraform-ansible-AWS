@@ -1,0 +1,83 @@
+---
+- name: Aguardar o cloud-init terminar (evita lock do apt no primeiro boot)
+  ansible.builtin.command: cloud-init status --wait
+  changed_when: false
+  failed_when: false
+
+- name: Atualizar cache e pacotes do sistema
+  ansible.builtin.apt:
+    update_cache: true
+    cache_valid_time: 3600
+    upgrade: safe
+    lock_timeout: 300
+
+- name: Instalar pacotes básicos
+  ansible.builtin.apt:
+    name:
+      - apt-transport-https
+      - ca-certificates
+      - curl
+      - gpg
+      - socat
+      - conntrack
+      - python3-debian # exigido pelo módulo deb822_repository
+    state: present
+    lock_timeout: 300
+
+- name: Impedir que o cloud-init sobrescreva o hostname no reboot
+  ansible.builtin.copy:
+    dest: /etc/cloud/cloud.cfg.d/99-preserve-hostname.cfg
+    content: "preserve_hostname: true\n"
+    mode: "0644"
+
+- name: Configurar hostname
+  ansible.builtin.hostname:
+    name: "{{ inventory_hostname }}"
+
+- name: Configurar /etc/hosts com todos os nós do cluster
+  ansible.builtin.blockinfile:
+    path: /etc/hosts
+    marker: "# {mark} ANSIBLE - NOS DO CLUSTER KUBERNETES"
+    block: |
+      {% for host in groups['k8s_cluster'] %}
+      {{ hostvars[host].private_ip }} {{ host }}
+      {% endfor %}
+
+- name: Desabilitar swap imediatamente
+  ansible.builtin.command: swapoff -a
+  when: ansible_facts['swaptotal_mb'] | int > 0
+  changed_when: true
+
+- name: Desabilitar swap de forma permanente (/etc/fstab)
+  ansible.builtin.replace:
+    path: /etc/fstab
+    regexp: '^([^#].*\sswap\s.*)$'
+    replace: '# \1'
+
+- name: Garantir carga dos módulos do kernel no boot
+  ansible.builtin.copy:
+    dest: /etc/modules-load.d/k8s.conf
+    content: |
+      overlay
+      br_netfilter
+    mode: "0644"
+
+- name: Carregar módulos do kernel agora
+  ansible.builtin.command: "modprobe {{ item }}"
+  loop:
+    - overlay
+    - br_netfilter
+  changed_when: false
+
+- name: Configurar parâmetros de sysctl para o Kubernetes
+  ansible.builtin.copy:
+    dest: /etc/sysctl.d/99-kubernetes.conf
+    content: |
+      net.bridge.bridge-nf-call-iptables  = 1
+      net.bridge.bridge-nf-call-ip6tables = 1
+      net.ipv4.ip_forward                 = 1
+    mode: "0644"
+  notify: Aplicar sysctl
+
+- name: Aplicar handlers pendentes antes de seguir
+  ansible.builtin.meta: flush_handlers

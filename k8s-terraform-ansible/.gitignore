@@ -1,0 +1,34 @@
+# ---------------- Terraform
+**/.terraform/*
+*.tfstate
+*.tfstate.*
+*.tfplan
+tfplan
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+# (o .terraform.lock.hcl DEVE ser commitado)
+
+# ---------------- Chaves e credenciais (NUNCA commitar)
+keys/*
+!keys/.gitkeep
+*.pem
+*.key
+id_rsa*
+id_ed25519*
+.aws/
+.env
+*.env
+credentials
+
+# ---------------- Ansible
+ansible/inventory.ini
+*.retry
+
+# ---------------- Diversos
+.DS_Store
+.vscode/
+.idea/

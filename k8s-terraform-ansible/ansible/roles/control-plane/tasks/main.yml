@@ -1,0 +1,127 @@
+---
+- name: Identificar o Control Plane primário
+  ansible.builtin.set_fact:
+    is_primary_cp: "{{ inventory_hostname == primary_control_plane }}"
+
+- name: Verificar se este nó já faz parte do cluster
+  ansible.builtin.stat:
+    path: /etc/kubernetes/kubelet.conf
+  register: kubelet_conf
+
+# ------------------------------------------------------------------ kubeadm init (primário)
+
+- name: Gerar a configuração do kubeadm
+  ansible.builtin.template:
+    src: kubeadm-config.yaml.j2
+    dest: /etc/kubernetes/kubeadm-config.yaml
+    mode: "0600"
+  when: is_primary_cp
+
+- name: Inicializar o cluster (kubeadm init)
+  ansible.builtin.shell: |
+    set -o pipefail
+    kubeadm init --config /etc/kubernetes/kubeadm-config.yaml --upload-certs \
+      | tee /root/kubeadm-init.log
+  args:
+    executable: /bin/bash
+  changed_when: true
+  when:
+    - is_primary_cp
+    - not kubelet_conf.stat.exists
+
+# ------------------------------------------------------------------ Calico (primário)
+
+- name: Baixar o manifesto do Calico {{ calico_version }}
+  ansible.builtin.get_url:
+    url: "{{ calico_manifest_url }}"
+    dest: /etc/kubernetes/calico.yaml
+    mode: "0644"
+  when: is_primary_cp
+
+- name: Instalar o Calico
+  ansible.builtin.command: kubectl apply -f /etc/kubernetes/calico.yaml
+  environment:
+    KUBECONFIG: "{{ admin_kubeconfig }}"
+  register: calico_apply
+  changed_when: "'created' in calico_apply.stdout or 'configured' in calico_apply.stdout"
+  when: is_primary_cp
+
+- name: Aguardar o Calico ficar pronto no Control Plane
+  ansible.builtin.command: kubectl -n kube-system rollout status daemonset/calico-node --timeout=600s
+  environment:
+    KUBECONFIG: "{{ admin_kubeconfig }}"
+  changed_when: false
+  when: is_primary_cp
+
+# ------------------------------------------------------------------ Extra 4: Control Planes adicionais
+
+- name: Gerar chave de certificados para novos Control Planes
+  ansible.builtin.command: kubeadm init phase upload-certs --upload-certs
+  register: certificate_key
+  changed_when: false
+  when:
+    - is_primary_cp
+    - groups['control_plane'] | length > 1
+
+- name: Gerar comando de join
+  ansible.builtin.command: kubeadm token create --ttl 1h --print-join-command
+  register: cp_join_base
+  changed_when: false
+  when:
+    - is_primary_cp
+    - groups['control_plane'] | length > 1
+
+- name: Montar comando de join para Control Plane
+  ansible.builtin.set_fact:
+    control_plane_join_command: >-
+      {{ cp_join_base.stdout }}
+      --control-plane
+      --certificate-key {{ certificate_key.stdout_lines[-1] }}
+  no_log: true
+  when:
+    - is_primary_cp
+    - groups['control_plane'] | length > 1
+
+- name: Adicionar Control Planes secundários ao cluster
+  ansible.builtin.command: >
+    {{ hostvars[primary_control_plane].control_plane_join_command }}
+    --apiserver-advertise-address {{ private_ip }}
+    --node-name {{ inventory_hostname }}
+  changed_when: true
+  throttle: 1 # um de cada vez, para o etcd adicionar membros com segurança
+  no_log: true
+  when:
+    - not is_primary_cp
+    - not kubelet_conf.stat.exists
+
+# ------------------------------------------------------------------ kubectl
+
+- name: Criar diretório .kube do usuário {{ kube_user }}
+  ansible.builtin.file:
+    path: "/home/{{ kube_user }}/.kube"
+    state: directory
+    owner: "{{ kube_user }}"
+    group: "{{ kube_user }}"
+    mode: "0700"
+
+- name: Copiar admin.conf para $HOME/.kube/config
+  ansible.builtin.copy:
+    src: "{{ admin_kubeconfig }}"
+    dest: "/home/{{ kube_user }}/.kube/config"
+    remote_src: true
+    owner: "{{ kube_user }}"
+    group: "{{ kube_user }}"
+    mode: "0600"
+
+- name: Criar diretório .kube do root
+  ansible.builtin.file:
+    path: /root/.kube
+    state: directory
+    mode: "0700"
+
+- name: Copiar admin.conf para /root/.kube/config
+  ansible.builtin.copy:
+    src: "{{ admin_kubeconfig }}"
+    dest: /root/.kube/config
+    remote_src: true
+    mode: "0600"

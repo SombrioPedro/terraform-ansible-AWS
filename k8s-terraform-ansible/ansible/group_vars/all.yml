@@ -1,0 +1,23 @@
+---
+# Versão "minor" do repositório pkgs.k8s.io (kubeadm, kubelet e kubectl)
+kubernetes_version: "v1.35"
+
+# Rede do cluster
+pod_network_cidr: "192.168.0.0/16"
+service_cidr: "10.96.0.0/12"
+
+# Calico (CNI)
+calico_version: "v3.32.2"
+calico_manifest_url: "https://raw.githubusercontent.com/projectcalico/calico/{{ calico_version }}/manifests/calico.yaml"
+
+# Usuário que terá o kubectl configurado
+kube_user: ubuntu
+admin_kubeconfig: /etc/kubernetes/admin.conf
+
+# O primeiro host do grupo control_plane é quem roda o `kubeadm init`
+primary_control_plane: "{{ groups['control_plane'][0] }}"
+
+# Aplicação de validação
+nginx_image: "nginx:stable-alpine"
+nginx_replicas: 3
+nginx_node_port: 30080

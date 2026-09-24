@@ -1,0 +1,48 @@
+---
+- name: Instalar o containerd
+  ansible.builtin.apt:
+    name: containerd
+    state: present
+    update_cache: true
+    lock_timeout: 300
+
+- name: Criar diretório de configuração
+  ansible.builtin.file:
+    path: /etc/containerd
+    state: directory
+    mode: "0755"
+
+- name: Gerar configuração padrão do containerd
+  ansible.builtin.shell: containerd config default > /etc/containerd/config.toml
+  args:
+    creates: /etc/containerd/config.toml
+  notify: Reiniciar containerd
+
+- name: Configurar SystemdCgroup = true (mesmo cgroup driver do kubelet)
+  ansible.builtin.replace:
+    path: /etc/containerd/config.toml
+    regexp: 'SystemdCgroup = false'
+    replace: 'SystemdCgroup = true'
+  notify: Reiniciar containerd
+
+- name: Validar que o SystemdCgroup ficou habilitado
+  ansible.builtin.command: grep -q 'SystemdCgroup = true' /etc/containerd/config.toml
+  changed_when: false
+
+- name: Configurar o crictl para usar o containerd
+  ansible.builtin.copy:
+    dest: /etc/crictl.yaml
+    content: |
+      runtime-endpoint: unix:///run/containerd/containerd.sock
+      image-endpoint: unix:///run/containerd/containerd.sock
+      timeout: 10
+    mode: "0644"
+
+- name: Habilitar e iniciar o containerd
+  ansible.builtin.systemd_service:
+    name: containerd
+    enabled: true
+    state: started
+
+- name: Aplicar reinício pendente do containerd
+  ansible.builtin.meta: flush_handlers
